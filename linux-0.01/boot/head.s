@@ -103,7 +103,95 @@ go:
     mov $0x0000,%ax
     cld                 /* 'direction'=0, movs moves forward */
 do_move:
-    
+    mov %ax,%es             /* destination segment */
+    add $0x1000,%ax
+    cmp $0x9000,%ax
+    jz end_move
+    mov %ax,%ds             /* source segment */
+    sub %di,%di
+    sub %si,%si
+    mov $0x8000,%cx
+    rep movsw
+    jmp do_move
+
+/* then we load the segment descriptors */
+
+end_move:
+    mov %cs,%ax         /* right, forgot this at first. didn't work :-) */
+    mov %ax,%ds
+    lidt (idt_48)       /* load idt with 0,0 */      
+    lgdt (gdt_48)       /* load gdt with whatever appropriate */
+
+/* that was painless, now we enable A20 */
+
+    call empty_8042
+    mov $0xd1,%al       /* command write */
+    out %al,$0x64
+    call empty_8042
+    mov $0xdf,%al       /*  A20 on */
+    out %al,$0x60
+    call empty_8042
+
+/* well, that went ok, I hope. Now we have to reprogram the interrupts :-(
+ we put them right after the intel-reserved hardware interrupts, at
+ int 0x20-0x2F. There they won't mess up anything. Sadly IBM really
+ messed this up with the original PC, and they haven't been able to
+ rectify it afterwards. Thus the bios puts interrupts at 0x08-0x0f,
+ which is used for the internal hardware interrupts as well. We just
+ have to reprogram the 8259's, and it isn't fun. */
+
+    mov $0x11,%al       /* initialization sequence */
+    out %al,$0x20       /* send it to 8259A-1 */
+    .word   0x00eb,0x00eb     /* jmp $+2, jmp $+2 */
+    out %al,$0xa0       /* and to 8259A-2 */
+    .word   0x00eb,0x00eb
+    mov $0x20,%al       /* start of hardware int's (0x20) */
+    out %al,$0x21
+    .word   0x00eb,0x00eb
+    mov $0x28,%al       /* start of hardware int's 2 (0x28) */
+    out %al,$0xa1
+    .word   0x00eb,0x00eb
+    mov $0x04,%al       /* 8259-1 is master */
+    out %al,$0x21
+    .word   0x00eb,0x00eb
+    mov $0x02,%al       /* 8259-2 is slave */
+    out %al,$0xa1
+    .word   0x00eb,0x00eb
+    mov $0x01,%al       /* 8086 mode for both */
+    out %al,$0x21
+    .word	0x00eb,0x00eb
+    out %al,$0xa1
+    .word	0x00eb,0x00eb
+    mov $0xff,%al
+    out %al,$0x21
+    .word	0x00eb,0x00eb
+    out %al,$0xa1
+
+/* well, that certainly wasn't fun :-(. Hopefully it works, and we don't
+ need no steenking BIOS anyway (except for the initial loading :-).
+ The BIOS-routine wants lots of unnecessary data, and it's less
+ "interesting" anyway. This is how REAL programmers do it.
+
+ Well, now's the time to actually move into protected mode. To make
+ things as simple as possible, we do no register set-up or anything,
+ we let the gnu-compiled 32-bit programs do that. We just jump to
+ absolute address 0x00000, in 32-bit protected mode. */
+
+    mov $0x0001,%ax     /* protected mode (PE) bit */
+    lmsw %ax            /* This is it! */
+    ljmp $8,$0          /* jmp offset 0 of segment 8 (cs) */
+
+.func empty_8042
+/* This routine checks that the keyboard command queue is empty
+    No timeout is used - if this hangs there is something wrong with
+    the machine, and we probably couldn't proceed anyway. */
+empty_8042:
+    .word   0x00eb,0x00eb
+    in $0x64,%al        /* 8042 status port */
+    test $2,%al         /* is input buffer full? */
+    jnz empty_8042      /* yes - loop */
+    ret
+.endfunc
 
 .func read_it
 sread:	.word 1			/* sectors read of current track */
